@@ -1,7 +1,10 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { AnimatePresence } from "framer-motion";
 import { Header, type HeatMapConfig } from "@/components/Controls/Header";
 import { HeatMapCanvas } from "./HeatMapCanvas";
+import { ShareView } from "./ShareView";
+import { WATCHLISTS } from "@/lib/universe/instruments";
 import type { ResolvedInstrument } from "@/lib/market-data/providers/types";
 
 function getDefaultDates() {
@@ -38,6 +41,7 @@ export function HeatMapContainer() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isMockData, setIsMockData] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   // Debounce config changes to avoid flooding the API on rapid date changes
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -118,6 +122,11 @@ export function HeatMapContainer() {
     fetchData(DEFAULT_CONFIG);
   }, [fetchData]);
 
+  const shareTitle =
+    config.customLabel ??
+    WATCHLISTS.find((w) => w.id === config.watchlistId)?.label ??
+    config.watchlistId;
+
   return (
     <div
       style={{
@@ -143,7 +152,23 @@ export function HeatMapContainer() {
         isLoading={isLoading}
         error={error}
         onReset={handleReset}
+        onShare={() => setShareOpen(true)}
       />
+
+      <AnimatePresence>
+        {shareOpen && (
+          <ShareView
+            instruments={instruments}
+            sizeMode={config.sizeMode}
+            colorMode={config.colorMode}
+            groupBy={config.groupBy}
+            defaultTitle={shareTitle}
+            startDate={config.startDate}
+            endDate={config.endDate}
+            onClose={() => setShareOpen(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -43,12 +43,32 @@ import type {
   FetchBatchCandlesParams,
   BatchCandleResult,
   InstrumentMeta,
+  LiveQuoteMeta,
 } from "./types";
 
 // Fire all requests in parallel — Yahoo has no documented rate limit.
 const MAX_CONCURRENT = 10;
 
 // ─── Yahoo response shapes ────────────────────────────────────────────────────
+
+// quoteSummary response shapes (used for live meta enrichment)
+interface YahooQuoteSummaryResponse {
+  quoteSummary?: {
+    result?: Array<{
+      price?: {
+        marketCap?: { raw?: number };
+        shortName?: string;
+        longName?: string;
+        currency?: string;
+      };
+      assetProfile?: {
+        sector?: string;
+        industry?: string;
+      };
+    }>;
+    error?: unknown;
+  };
+}
 
 interface YahooQuote {
   open: (number | null)[];
@@ -167,8 +187,75 @@ function sleep(ms: number) {
 export class YahooProvider implements MarketDataProvider {
   readonly name = "yahoo";
 
-  // No API key needed
+  // Crumb + cookie needed for quoteSummary (profile-level data).
+  // Cached per provider instance; refreshed after 30 min or on 401.
+  private crumb: string | null = null;
+  private cookieJar: string | null = null;
+  private crumbFetchedAt = 0;
+  private static readonly CRUMB_TTL_MS = 30 * 60 * 1000;
+
   constructor() {}
+
+  /**
+   * Obtain a Yahoo crumb + session cookie.
+   * Flow: fc.yahoo.com → set-cookie → /v1/test/getcrumb → crumb string.
+   * The crumb must be sent as ?crumb=... and the cookie as Cookie: ... on
+   * all subsequent quoteSummary calls.
+   */
+  private async ensureCrumb(): Promise<{ crumb: string; cookie: string } | null> {
+    const now = Date.now();
+    if (
+      this.crumb &&
+      this.cookieJar &&
+      now - this.crumbFetchedAt < YahooProvider.CRUMB_TTL_MS
+    ) {
+      return { crumb: this.crumb, cookie: this.cookieJar };
+    }
+
+    try {
+      // Step 1: Hit fc.yahoo.com to get a session cookie
+      const fcRes = await fetch("https://fc.yahoo.com/", {
+        redirect: "follow",
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; finance-heatmap/1.0)" },
+      });
+
+      // getSetCookie() returns each Set-Cookie header as its own string (Node 18+).
+      // Fall back to splitting the combined header for older runtimes.
+      const rawCookies: string[] =
+        typeof (fcRes.headers as unknown as { getSetCookie?(): string[] }).getSetCookie === "function"
+          ? (fcRes.headers as unknown as { getSetCookie(): string[] }).getSetCookie()
+          : (fcRes.headers.get("set-cookie") ?? "").split(/,(?=[^ ])/).filter(Boolean);
+
+      const cookieString = rawCookies.map((c) => c.split(";")[0]).join("; ");
+
+      // Step 2: Exchange cookie for crumb
+      const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; finance-heatmap/1.0)",
+          "Cookie": cookieString,
+        },
+      });
+
+      if (!crumbRes.ok) {
+        console.error(`[Yahoo] getcrumb HTTP ${crumbRes.status}`);
+        return null;
+      }
+
+      const crumb = (await crumbRes.text()).trim();
+      if (!crumb || crumb.startsWith("{")) {
+        console.error("[Yahoo] getcrumb returned unexpected value:", crumb.slice(0, 80));
+        return null;
+      }
+
+      this.crumb = crumb;
+      this.cookieJar = cookieString;
+      this.crumbFetchedAt = now;
+      return { crumb, cookie: cookieString };
+    } catch (err) {
+      console.error("[Yahoo] ensureCrumb failed:", err);
+      return null;
+    }
+  }
 
   async fetchCandles(params: FetchCandlesParams): Promise<DailyCandle[]> {
     return yahooFetch(params.symbol, params.startDate, params.endDate);
@@ -206,5 +293,68 @@ export class YahooProvider implements MarketDataProvider {
     // Yahoo's quote summary endpoint could provide this, but sector/industry
     // are already supplied by our universe config — skip the extra call.
     return null;
+  }
+
+  /**
+   * Fetch live quote metadata (market cap, sector, industry, name) for multiple
+   * symbols concurrently via Yahoo's quoteSummary endpoint.
+   *
+   * WHY quoteSummary and not v7/finance/quote:
+   *   v7/finance/quote is a price-tick endpoint — it returns regularMarketCap but
+   *   does NOT return sector/industry (those are profile-level data). The
+   *   quoteSummary `assetProfile` module is the reliable source for sector.
+   *   We request `price,assetProfile` in one call per symbol and run all in parallel.
+   *
+   * Used to enrich custom bucket instruments that aren't in the predefined universe.
+   */
+  async fetchBatchQuoteMeta(symbols: string[]): Promise<Record<string, LiveQuoteMeta | null>> {
+    const out: Record<string, LiveQuoteMeta | null> = Object.fromEntries(
+      symbols.map((s) => [s, null])
+    );
+
+    if (symbols.length === 0) return out;
+
+    const auth = await this.ensureCrumb();
+
+    await Promise.all(
+      symbols.map(async (symbol) => {
+        try {
+          const crumbParam = auth ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
+          const url =
+            `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}` +
+            `?modules=price,assetProfile${crumbParam}`;
+
+          const res = await fetch(url, {
+            cache: "no-store",
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; finance-heatmap/1.0)",
+              "Accept": "application/json",
+              ...(auth ? { "Cookie": auth.cookie } : {}),
+            },
+          });
+
+          if (!res.ok) {
+            console.error(`[Yahoo] quoteSummary HTTP ${res.status} for ${symbol}`);
+            return;
+          }
+
+          const data: YahooQuoteSummaryResponse = await res.json();
+          const result = data.quoteSummary?.result?.[0];
+          if (!result) return;
+
+          out[symbol] = {
+            marketCap:  result.price?.marketCap?.raw,
+            sector:     result.assetProfile?.sector,
+            industry:   result.assetProfile?.industry,
+            name:       result.price?.shortName ?? result.price?.longName,
+            currency:   result.price?.currency,
+          };
+        } catch (err) {
+          console.error(`[Yahoo] fetchBatchQuoteMeta failed for ${symbol}:`, err);
+        }
+      })
+    );
+
+    return out;
   }
 }

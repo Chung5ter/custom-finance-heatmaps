@@ -17,7 +17,7 @@ import type { ReturnMode } from "@/lib/market-data";
 import { calculatePerformance } from "@/lib/market-data/calculator";
 import { getCached, setCached, makeCandleCacheKey } from "@/lib/market-data/cache";
 import { getWatchlist, DEFAULT_WATCHLIST_ID } from "@/lib/universe/instruments";
-import type { DailyCandle } from "@/lib/market-data/providers/types";
+import type { DailyCandle, LiveQuoteMeta } from "@/lib/market-data/providers/types";
 
 // Use mock data when Polygon API key is not set (for local dev without an API key)
 // Yahoo Finance requires no API key, so mock mode only activates when explicitly requested.
@@ -89,13 +89,13 @@ export async function GET(req: NextRequest) {
 
   try {
     let batchCandles: Record<string, DailyCandle[] | null>;
+    // Declared here so it's accessible for the quote-meta enrichment step below.
+    const provider = USE_MOCK ? null : getProvider();
 
     if (USE_MOCK) {
       // Generate mock candles for UI development without a real API key
       batchCandles = generateMockCandles(symbols, startDate, endDate);
     } else {
-      const provider = getProvider();
-
       // Check cache first
       const cacheKey = makeCandleCacheKey(cacheId, startDate, clampedEndDate, adjusted);
       const cached = getCached<Record<string, DailyCandle[] | null>>(cacheKey);
@@ -103,7 +103,7 @@ export async function GET(req: NextRequest) {
       if (cached) {
         batchCandles = cached;
       } else {
-        batchCandles = await provider.fetchBatchCandles({ symbols, startDate, endDate: clampedEndDate, adjusted });
+        batchCandles = await provider!.fetchBatchCandles({ symbols, startDate, endDate: clampedEndDate, adjusted });
         // Only cache if every symbol returned data — a partial result means one or
         // more calls were rate-limited and should be retried on the next request.
         const isComplete = symbols.every((s) => batchCandles[s] !== null);
@@ -145,6 +145,40 @@ export async function GET(req: NextRequest) {
         marketCapBucket: instrument.marketCapBucket ?? "mid",
       };
     });
+
+    // ── Live quote enrichment for custom buckets ───────────────────────────────
+    // Custom symbols aren't in the predefined universe, so they lack sector,
+    // industry, name, and market cap. Fetch all of these via Yahoo quoteSummary.
+    // Extract the bound method so TypeScript can narrow it to a plain function.
+    const fetchBatchQuoteMeta = provider?.fetchBatchQuoteMeta?.bind(provider);
+    if (!USE_MOCK && isCustom && fetchBatchQuoteMeta) {
+      // Only enrich symbols that are missing metadata (not already in the universe).
+      const needsEnrichment = results
+        .filter((r) => !r.error && (!r.sector || !r.marketCap))
+        .map((r) => r.symbol);
+
+      if (needsEnrichment.length > 0) {
+        const metaCacheKey = `quotemeta:${needsEnrichment.slice().sort().join(",")}`;
+        let quoteMeta = getCached<Record<string, LiveQuoteMeta | null>>(metaCacheKey);
+
+        if (!quoteMeta) {
+          quoteMeta = await fetchBatchQuoteMeta(needsEnrichment);
+          // Quote meta doesn't need to be as fresh as candle data — 5 min is fine.
+          setCached(metaCacheKey, quoteMeta, 5 * 60 * 1000);
+        }
+
+        for (const r of results) {
+          const meta = quoteMeta[r.symbol];
+          if (!meta) continue;
+          if (!r.marketCap && meta.marketCap) r.marketCap = meta.marketCap;
+          if (!r.sector    && meta.sector)    r.sector    = meta.sector;
+          if (!r.industry  && meta.industry)  r.industry  = meta.industry;
+          // Only overwrite name if it's still just the raw ticker (our unknown-symbol fallback)
+          if (r.name === r.symbol && meta.name) r.name = meta.name;
+          if (!r.currency  && meta.currency)  r.currency  = meta.currency;
+        }
+      }
+    }
 
     return NextResponse.json({
       watchlistId,

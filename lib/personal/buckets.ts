@@ -24,10 +24,9 @@ export interface PersonalBucket {
 
 export const MY_BUCKETS: PersonalBucket[] = [
   // ── Add your buckets here ─────────────────────────────────────────────────
-  // Example:
-  // {
-  //   id: "my-tech",
-  //   label: "My Tech",
-  //   symbols: ["AAPL", "MSFT", "NVDA", "GOOGL", "AMD", "AVGO"],
-  // },
+  {
+    id: "energy",
+    label: "Energy",
+    symbols: ["XOM", "NEE", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "DVN", "KMI"],
+  },
 ];

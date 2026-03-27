@@ -58,6 +58,21 @@ export interface MarketDataProvider {
 
   /** Optional: enrich metadata for a symbol. */
   fetchMeta?(symbol: string): Promise<InstrumentMeta | null>;
+
+  /**
+   * Optional: fetch live quote metadata (market cap, sector, industry, name) for
+   * multiple symbols in a single request. Used to enrich custom bucket instruments
+   * that aren't in the predefined universe and therefore lack this data.
+   */
+  fetchBatchQuoteMeta?(symbols: string[]): Promise<Record<string, LiveQuoteMeta | null>>;
+}
+
+export interface LiveQuoteMeta {
+  marketCap?: number;
+  sector?: string;
+  industry?: string;
+  name?: string;
+  currency?: string;
 }
 
 // ─── Resolved instrument (output from calculator layer) ─────────────────────

@@ -2,7 +2,7 @@
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { WATCHLISTS } from "@/lib/universe/instruments";
 import { useState, useEffect } from "react";
-import { MY_BUCKETS, type PersonalBucket } from "@/lib/personal/buckets";
+import { useCustomBuckets } from "@/lib/personal/useCustomBuckets";
 import { BucketManager } from "./BucketManager";
 
 export interface HeatMapConfig {
@@ -69,9 +69,9 @@ export function Header({ config, onChange, isLoading, isMockData }: HeaderProps)
   const [todayStr, setTodayStr] = useState("");
   useEffect(() => { setTodayStr(new Date().toISOString().slice(0, 10)); }, []);
 
-  // Personal buckets come from lib/personal/buckets.ts (hardcoded, no DB needed).
-  // GOING PUBLIC? See the comment block at the top of that file.
-  const customBuckets: PersonalBucket[] = MY_BUCKETS;
+  // Custom buckets — managed in localStorage, seeded from MY_BUCKETS on first visit.
+  // Hook returns [] during SSR and hydrates from localStorage after mount.
+  const { buckets: customBuckets, addBucket, updateBucket, deleteBucket } = useCustomBuckets();
   const [bucketManagerOpen, setBucketManagerOpen] = useState(false);
 
   return (
@@ -180,6 +180,10 @@ export function Header({ config, onChange, isLoading, isMockData }: HeaderProps)
           <BucketManager
             isOpen={bucketManagerOpen}
             onClose={() => setBucketManagerOpen(false)}
+            buckets={customBuckets}
+            onAdd={addBucket}
+            onUpdate={updateBucket}
+            onDelete={deleteBucket}
           />
 
           {/* Date presets */}
@@ -222,6 +226,7 @@ export function Header({ config, onChange, isLoading, isMockData }: HeaderProps)
               }}
               className="w-36"
               placeholder="Pick a Monday"
+              suppressHydrationWarning
             />
           </div>
 
@@ -235,6 +240,7 @@ export function Header({ config, onChange, isLoading, isMockData }: HeaderProps)
                 max={todayStr || undefined}
                 onChange={(e) => onChange({ startDate: e.target.value })}
                 className="w-36"
+                suppressHydrationWarning
               />
               <span className="text-xs" style={{ color: "var(--text-muted)" }}>→</span>
               <input
@@ -243,6 +249,7 @@ export function Header({ config, onChange, isLoading, isMockData }: HeaderProps)
                 max={todayStr || undefined}
                 onChange={(e) => onChange({ endDate: e.target.value })}
                 className="w-36"
+                suppressHydrationWarning
               />
             </div>
           </div>

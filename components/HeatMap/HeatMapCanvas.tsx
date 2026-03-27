@@ -17,6 +17,7 @@ interface HeatMapCanvasProps {
   isLoading: boolean;
   error?: string | null;
   onReset?: () => void;
+  onShare?: () => void;
 }
 
 const HOVER_DELAY_MS = 80;   // ms before showing card
@@ -30,6 +31,7 @@ export function HeatMapCanvas({
   isLoading,
   error,
   onReset,
+  onShare,
 }: HeatMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -123,6 +125,22 @@ export function HeatMapCanvas({
           }}
         />
         <span className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>+5%+</span>
+        {onShare && instruments.length > 0 && (
+          <button
+            onClick={onShare}
+            title="Share / screenshot view"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-all"
+            style={{
+              marginLeft: 8,
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "rgba(255,255,255,0.45)",
+              cursor: "pointer",
+            }}
+          >
+            ↗ Share
+          </button>
+        )}
       </div>
 
       {/* Main canvas area */}
