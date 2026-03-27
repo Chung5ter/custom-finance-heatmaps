@@ -29,4 +29,5 @@ export const MY_BUCKETS: PersonalBucket[] = [
     label: "Energy",
     symbols: ["XOM", "NEE", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "DVN", "KMI"],
   },
+
 ];
